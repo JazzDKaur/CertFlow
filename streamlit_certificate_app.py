@@ -4,8 +4,11 @@ import zipfile
 import shutil
 import tempfile
 import subprocess
+import calendar
+import hashlib
+from datetime import date
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 
 import pandas as pd
 import streamlit as st
@@ -21,6 +24,7 @@ REQUIRED_COLUMNS = [
     "Total Marks",
     "Grades",
     "Enrollment No.",
+    "Exam Cycle",
 ]
 
 PLACEHOLDERS = {
@@ -29,6 +33,34 @@ PLACEHOLDERS = {
     "{{Marks}}": "Total Marks",
     "{{Grade}}": "Grades",
     "{{Enrollment}}": "Enrollment No.",
+    "{{DateIssued}}": "Calculated from Exam Cycle",
+}
+
+MONTH_LOOKUP = {
+    "JAN": 1,
+    "JANUARY": 1,
+    "FEB": 2,
+    "FEBRUARY": 2,
+    "MAR": 3,
+    "MARCH": 3,
+    "APR": 4,
+    "APRIL": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUNE": 6,
+    "JUL": 7,
+    "JULY": 7,
+    "AUG": 8,
+    "AUGUST": 8,
+    "SEP": 9,
+    "SEPT": 9,
+    "SEPTEMBER": 9,
+    "OCT": 10,
+    "OCTOBER": 10,
+    "NOV": 11,
+    "NOVEMBER": 11,
+    "DEC": 12,
+    "DECEMBER": 12,
 }
 
 
@@ -38,6 +70,78 @@ def safe_filename(text: str) -> str:
     text = re.sub(r'[\\/*?:"<>|]', "", text)
     text = re.sub(r"\s+", " ", text)
     return text or "certificate"
+
+
+def get_ordinal_suffix(day: int) -> str:
+    """Return st, nd, rd, or th suffix for a day number."""
+    if 11 <= day % 100 <= 13:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+
+
+def format_certificate_date(date_value: date) -> str:
+    """Format date as 31st Jan 26."""
+    return f"{date_value.day}{get_ordinal_suffix(date_value.day)} {date_value.strftime('%b %y')}"
+
+
+def last_day_of_month(year: int, month: int) -> date:
+    """Return the last date of a given month."""
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def get_last_completed_month_end(today: Optional[date] = None) -> date:
+    """Return the last date of the previous completed month."""
+    today = today or date.today()
+    if today.month == 1:
+        return last_day_of_month(today.year - 1, 12)
+    return last_day_of_month(today.year, today.month - 1)
+
+
+def parse_exam_cycle(exam_cycle: str) -> tuple[int, int]:
+    """
+    Parse exam cycle values like Jan26, JAN26, Jan-26, Jan 26, January 2026.
+    Returns (month, year).
+    """
+    value = str(exam_cycle).strip()
+    if not value:
+        raise ValueError("Exam Cycle is blank")
+
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", value).upper()
+    match = re.match(r"^([A-Z]+)(\d{2}|\d{4})$", cleaned)
+
+    if not match:
+        raise ValueError(f"Invalid Exam Cycle format: {exam_cycle}. Use values like Jan26, Apr26, Sep26.")
+
+    month_text, year_text = match.groups()
+    if month_text not in MONTH_LOOKUP:
+        raise ValueError(f"Invalid month in Exam Cycle: {exam_cycle}")
+
+    year = int(year_text)
+    if len(year_text) == 2:
+        year += 2000
+
+    return MONTH_LOOKUP[month_text], year
+
+
+def calculate_date_issued(exam_cycle: str, today: Optional[date] = None) -> str:
+    """
+    Calculate certificate issue date from Exam Cycle.
+    If the exam cycle is in the future or current running month, use the last completed month end.
+    """
+    today = today or date.today()
+    month, year = parse_exam_cycle(exam_cycle)
+    exam_cycle_end = last_day_of_month(year, month)
+    last_completed_end = get_last_completed_month_end(today)
+
+    issue_date = min(exam_cycle_end, last_completed_end)
+    return format_certificate_date(issue_date)
+
+
+def add_date_issued_preview(df: pd.DataFrame) -> pd.DataFrame:
+    """Add a calculated Date Issued column for preview and generation."""
+    df = df.copy()
+    df["Date Issued"] = df["Exam Cycle"].apply(calculate_date_issued)
+    return df
 
 
 def replace_text(shape, replacements: dict) -> None:
@@ -128,7 +232,6 @@ def generate_certificates(
     df: pd.DataFrame,
     template_path: Path,
     output_folder: Path,
-    date_issued: str,
     progress_bar=None,
     status_box=None,
 ) -> tuple[int, int, list[dict]]:
@@ -153,6 +256,8 @@ def generate_certificates(
         else:
             prs = Presentation(str(template_path))
 
+            date_issued = row.get("Date Issued") or calculate_date_issued(row["Exam Cycle"])
+
             replacements = {
                 "{{Name}}": row["Name of Student"],
                 "{{Course}}": row["Subject Name"],
@@ -171,7 +276,7 @@ def generate_certificates(
             passed += 1
 
             if status_box:
-                status_box.success(f"Generated: {filename}")
+                status_box.success(f"Generated: {filename} | Date Issued: {date_issued}")
 
         if progress_bar:
             progress_bar.progress(count / total)
@@ -186,6 +291,25 @@ def files_to_bytes_dict(folder: Path, pattern: str) -> dict[str, bytes]:
         if file.is_file():
             file_dict[file.name] = file.read_bytes()
     return file_dict
+
+
+def download_state_key(key_prefix: str, file_name: str) -> str:
+    digest = hashlib.md5(file_name.encode("utf-8")).hexdigest()
+    return f"downloaded_{key_prefix}_{digest}"
+
+
+def mark_downloaded(state_key: str) -> None:
+    st.session_state[state_key] = True
+
+
+def render_file_name(file_name: str, downloaded: bool) -> None:
+    if downloaded:
+        st.markdown(
+            f"<div style='color:#168038; font-weight:700;'>✅ {file_name}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.write(file_name)
 
 
 def render_individual_downloads(title: str, files_dict: dict[str, bytes], mime: str, key_prefix: str):
@@ -207,15 +331,22 @@ def render_individual_downloads(title: str, files_dict: dict[str, bytes], mime: 
             return
 
         for i, (file_name, file_data) in enumerate(filtered_files.items(), start=1):
+            state_key = download_state_key(key_prefix, file_name)
+            downloaded = st.session_state.get(state_key, False)
+
             c1, c2 = st.columns([4, 1])
-            c1.write(file_name)
-            c2.download_button(
-                label="Download",
-                data=file_data,
-                file_name=file_name,
-                mime=mime,
-                key=f"{key_prefix}_{i}_{file_name}",
-            )
+            with c1:
+                render_file_name(file_name, downloaded)
+            with c2:
+                st.download_button(
+                    label="✅ Downloaded" if downloaded else "Download",
+                    data=file_data,
+                    file_name=file_name,
+                    mime=mime,
+                    key=f"{key_prefix}_{i}_{file_name}",
+                    on_click=mark_downloaded,
+                    args=(state_key,),
+                )
 
 
 def init_session_state():
@@ -234,6 +365,12 @@ def init_session_state():
             st.session_state[key] = value
 
 
+def clear_downloaded_statuses():
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("downloaded_"):
+            del st.session_state[key]
+
+
 def clear_previous_results():
     st.session_state.generated = False
     st.session_state.ppt_zip_bytes = None
@@ -243,6 +380,7 @@ def clear_previous_results():
     st.session_state.pdf_files = {}
     st.session_state.summary = {}
     st.session_state.pdf_message = ""
+    clear_downloaded_statuses()
 
 
 # -----------------------------
@@ -261,8 +399,12 @@ st.caption("Upload an Excel file and a PowerPoint certificate template to genera
 
 with st.sidebar:
     st.header("⚙️ Settings")
-    date_issued = st.text_input("Date Issued", value="07 July 2026")
     convert_pdf = st.checkbox("Also convert PPT certificates to PDF", value=False)
+
+    st.info(
+        "Date Issued is now calculated automatically from the Excel column `Exam Cycle`. "
+        "Example: Jan26 → 31st Jan 26. Future/current cycles use the last completed month."
+    )
 
     st.markdown("---")
     st.subheader("Template Placeholders")
@@ -285,13 +427,21 @@ st.markdown("---")
 if excel_file:
     try:
         preview_df = pd.read_excel(excel_file).fillna("")
-        st.subheader("📊 Excel Preview")
-        st.dataframe(preview_df.head(10), use_container_width=True)
 
         missing_columns = [col for col in REQUIRED_COLUMNS if col not in preview_df.columns]
         if missing_columns:
             st.error("Missing required columns: " + ", ".join(missing_columns))
+            st.subheader("📊 Excel Preview")
+            st.dataframe(preview_df.head(10), use_container_width=True)
         else:
+            try:
+                preview_df = add_date_issued_preview(preview_df)
+            except Exception as e:
+                st.error(f"Could not calculate Date Issued from Exam Cycle: {e}")
+
+            st.subheader("📊 Excel Preview")
+            st.dataframe(preview_df.head(10), use_container_width=True)
+
             total_students = len(preview_df)
             pass_count = len(preview_df[preview_df["Grades"].astype(str).str.strip().str.upper() != "F"])
             fail_count = total_students - pass_count
@@ -331,6 +481,12 @@ if st.button("🚀 Generate Certificates", disabled=button_disabled, type="prima
         if missing_columns:
             st.error("Cannot generate. Missing columns: " + ", ".join(missing_columns))
         else:
+            try:
+                df = add_date_issued_preview(df)
+            except Exception as e:
+                st.error(f"Cannot generate. Invalid Exam Cycle data: {e}")
+                st.stop()
+
             st.subheader("🔄 Generation Progress")
             progress_bar = st.progress(0)
             status_box = st.empty()
@@ -339,7 +495,6 @@ if st.button("🚀 Generate Certificates", disabled=button_disabled, type="prima
                 df=df,
                 template_path=template_path,
                 output_folder=output_folder,
-                date_issued=date_issued,
                 progress_bar=progress_bar,
                 status_box=status_box,
             )
