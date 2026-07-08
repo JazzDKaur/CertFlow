@@ -41,7 +41,7 @@ def safe_filename(text: str) -> str:
 
 
 def replace_text(shape, replacements: dict) -> None:
-    """Replace placeholder text inside a normal text shape while preserving first-run formatting."""
+    """Replace placeholder text inside a normal text shape."""
     if not shape.has_text_frame:
         return
 
@@ -71,57 +71,20 @@ def process_shape(shape, replacements: dict) -> None:
     replace_text(shape, replacements)
 
 
-def create_zip_bytes(source_folder: Path) -> bytes:
-    """Create ZIP in memory and return bytes. Safer for Streamlit Cloud downloads."""
-    zip_buffer = tempfile.SpooledTemporaryFile()
-
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+def create_zip(source_folder: Path, zip_path: Path) -> None:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
         for file in sorted(source_folder.iterdir()):
             if file.is_file():
                 zipf.write(file, arcname=file.name)
 
-    zip_buffer.seek(0)
-    data = zip_buffer.read()
-    zip_buffer.close()
-    return data
-
-
-def excel_bytes_from_dataframe(df: pd.DataFrame) -> bytes:
-    """Create Excel file in memory and return bytes."""
-    temp_file = tempfile.SpooledTemporaryFile()
-    with pd.ExcelWriter(temp_file, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False)
-    temp_file.seek(0)
-    data = temp_file.read()
-    temp_file.close()
-    return data
-
-
-def find_libreoffice() -> str | None:
-    """Find LibreOffice executable on Linux/Streamlit Cloud/Windows."""
-    candidates = [
-        shutil.which("soffice"),
-        shutil.which("libreoffice"),
-        r"C:\Program Files\LibreOffice\program\soffice.exe",
-        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-    ]
-
-    for candidate in candidates:
-        if candidate and Path(candidate).exists():
-            return candidate
-    return None
-
 
 def convert_pptx_to_pdf(ppt_folder: Path, pdf_folder: Path) -> Tuple[bool, str]:
-    """Convert PPTX files to PDF using LibreOffice."""
+    """Convert PPTX files to PDF using LibreOffice if available."""
     pdf_folder.mkdir(parents=True, exist_ok=True)
 
-    soffice = find_libreoffice()
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice:
-        return (
-            False,
-            "LibreOffice was not found. On Streamlit Cloud, add 'libreoffice' in packages.txt and reboot the app.",
-        )
+        return False, "LibreOffice is not installed/found. PDF conversion was skipped."
 
     ppt_files = list(ppt_folder.glob("*.pptx"))
     if not ppt_files:
@@ -144,25 +107,21 @@ def convert_pptx_to_pdf(ppt_folder: Path, pdf_folder: Path) -> Tuple[bool, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
         )
 
         expected_pdf = pdf_folder / f"{ppt_file.stem}.pdf"
-
         if result.returncode != 0 or not expected_pdf.exists():
-            errors.append(
-                f"{ppt_file.name}: {result.stderr.strip() or result.stdout.strip() or 'Unknown error'}"
-            )
+            errors.append(f"{ppt_file.name}: {result.stderr or result.stdout}")
 
     pdf_count = len(list(pdf_folder.glob("*.pdf")))
 
     if pdf_count == 0:
-        return False, "PDF conversion failed. " + " | ".join(errors)
+        return False, "PDF conversion failed. " + " | ".join(errors[:3])
 
     if errors:
-        return True, f"PDF conversion completed partially. {pdf_count} PDF files created. Some files failed."
+        return True, f"PDF conversion completed with some warnings. {pdf_count} PDFs created."
 
-    return True, f"PDF conversion completed. {pdf_count} PDF files created."
+    return True, f"PDF conversion completed. {pdf_count} PDFs created."
 
 
 def generate_certificates(
@@ -183,7 +142,7 @@ def generate_certificates(
     if total == 0:
         return 0, 0, []
 
-    for position, (_, row) in enumerate(df.iterrows(), start=1):
+    for count, (index, row) in enumerate(df.iterrows(), start=1):
         grade = str(row["Grades"]).strip().upper()
 
         if grade == "F":
@@ -215,9 +174,75 @@ def generate_certificates(
                 status_box.success(f"Generated: {filename}")
 
         if progress_bar:
-            progress_bar.progress(position / total)
+            progress_bar.progress(count / total)
 
     return passed, failed, failed_students
+
+
+def files_to_bytes_dict(folder: Path, pattern: str) -> dict[str, bytes]:
+    """Read generated files into memory so downloads still work after temp folder is deleted."""
+    file_dict = {}
+    for file in sorted(folder.glob(pattern)):
+        if file.is_file():
+            file_dict[file.name] = file.read_bytes()
+    return file_dict
+
+
+def render_individual_downloads(title: str, files_dict: dict[str, bytes], mime: str, key_prefix: str):
+    if not files_dict:
+        return
+
+    with st.expander(title, expanded=False):
+        search = st.text_input("🔍 Search by name or enrollment number", key=f"search_{key_prefix}")
+        filtered_files = {
+            name: data
+            for name, data in files_dict.items()
+            if search.lower() in name.lower()
+        }
+
+        st.caption(f"Showing {len(filtered_files)} of {len(files_dict)} files")
+
+        if not filtered_files:
+            st.warning("No matching certificate found.")
+            return
+
+        for i, (file_name, file_data) in enumerate(filtered_files.items(), start=1):
+            c1, c2 = st.columns([4, 1])
+            c1.write(file_name)
+            c2.download_button(
+                label="Download",
+                data=file_data,
+                file_name=file_name,
+                mime=mime,
+                key=f"{key_prefix}_{i}_{file_name}",
+            )
+
+
+def init_session_state():
+    defaults = {
+        "generated": False,
+        "ppt_zip_bytes": None,
+        "pdf_zip_bytes": None,
+        "skipped_excel_bytes": None,
+        "ppt_files": {},
+        "pdf_files": {},
+        "summary": {},
+        "pdf_message": "",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def clear_previous_results():
+    st.session_state.generated = False
+    st.session_state.ppt_zip_bytes = None
+    st.session_state.pdf_zip_bytes = None
+    st.session_state.skipped_excel_bytes = None
+    st.session_state.ppt_files = {}
+    st.session_state.pdf_files = {}
+    st.session_state.summary = {}
+    st.session_state.pdf_message = ""
 
 
 # -----------------------------
@@ -229,15 +254,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# Persistent download storage for Streamlit Cloud
-if "ppt_zip_bytes" not in st.session_state:
-    st.session_state.ppt_zip_bytes = None
-if "pdf_zip_bytes" not in st.session_state:
-    st.session_state.pdf_zip_bytes = None
-if "skipped_excel_bytes" not in st.session_state:
-    st.session_state.skipped_excel_bytes = None
-if "result_summary" not in st.session_state:
-    st.session_state.result_summary = None
+init_session_state()
 
 st.title("🎓 Excel to PPT Certificate Generator")
 st.caption("Upload an Excel file and a PowerPoint certificate template to generate personalized certificates.")
@@ -255,10 +272,6 @@ with st.sidebar:
         language="text",
     )
 
-    st.markdown("---")
-    st.caption("LibreOffice path detected:")
-    st.code(str(find_libreoffice()), language="text")
-
 col1, col2 = st.columns(2)
 
 with col1:
@@ -269,8 +282,6 @@ with col2:
 
 st.markdown("---")
 
-preview_df = None
-
 if excel_file:
     try:
         preview_df = pd.read_excel(excel_file).fillna("")
@@ -280,7 +291,6 @@ if excel_file:
         missing_columns = [col for col in REQUIRED_COLUMNS if col not in preview_df.columns]
         if missing_columns:
             st.error("Missing required columns: " + ", ".join(missing_columns))
-            preview_df = None
         else:
             total_students = len(preview_df)
             pass_count = len(preview_df[preview_df["Grades"].astype(str).str.strip().str.upper() != "F"])
@@ -294,22 +304,23 @@ if excel_file:
     except Exception as e:
         st.error(f"Could not read Excel file: {e}")
         preview_df = None
+else:
+    preview_df = None
 
 button_disabled = not excel_file or not ppt_template or preview_df is None
 
 if st.button("🚀 Generate Certificates", disabled=button_disabled, type="primary"):
-    # Clear old downloads first
-    st.session_state.ppt_zip_bytes = None
-    st.session_state.pdf_zip_bytes = None
-    st.session_state.skipped_excel_bytes = None
-    st.session_state.result_summary = None
+    clear_previous_results()
 
-    with tempfile.TemporaryDirectory() as tmpdir_str:
-        tmpdir = Path(tmpdir_str)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
         excel_path = tmpdir / "students.xlsx"
         template_path = tmpdir / "template.pptx"
         output_folder = tmpdir / "Certificates"
         pdf_folder = tmpdir / "PDF_Certificates"
+        ppt_zip = tmpdir / "Certificates.zip"
+        pdf_zip = tmpdir / "PDF_Certificates.zip"
+        skipped_file = tmpdir / "Skipped_Students.xlsx"
 
         excel_path.write_bytes(excel_file.getvalue())
         template_path.write_bytes(ppt_template.getvalue())
@@ -333,44 +344,62 @@ if st.button("🚀 Generate Certificates", disabled=button_disabled, type="prima
                 status_box=status_box,
             )
 
-            # IMPORTANT FIX: store ZIP bytes in session_state before temp folder is deleted
-            st.session_state.ppt_zip_bytes = create_zip_bytes(output_folder)
+            # Store individual PPT files in memory
+            st.session_state.ppt_files = files_to_bytes_dict(output_folder, "*.pptx")
 
+            # Create and store PPT ZIP in memory
+            create_zip(output_folder, ppt_zip)
+            st.session_state.ppt_zip_bytes = ppt_zip.read_bytes()
+
+            # Store skipped students Excel in memory
             if failed_students:
-                st.session_state.skipped_excel_bytes = excel_bytes_from_dataframe(pd.DataFrame(failed_students))
+                pd.DataFrame(failed_students).to_excel(skipped_file, index=False)
+                st.session_state.skipped_excel_bytes = skipped_file.read_bytes()
 
-            pdf_message = None
+            # Optional PDF conversion
             if convert_pdf:
                 with st.spinner("Converting PPT files to PDF..."):
                     success, message = convert_pptx_to_pdf(output_folder, pdf_folder)
-                    pdf_message = message
+                st.session_state.pdf_message = message
 
                 if success and any(pdf_folder.glob("*.pdf")):
-                    st.session_state.pdf_zip_bytes = create_zip_bytes(pdf_folder)
+                    st.session_state.pdf_files = files_to_bytes_dict(pdf_folder, "*.pdf")
+                    create_zip(pdf_folder, pdf_zip)
+                    st.session_state.pdf_zip_bytes = pdf_zip.read_bytes()
                 else:
+                    st.session_state.pdf_files = {}
                     st.session_state.pdf_zip_bytes = None
+            else:
+                st.session_state.pdf_message = "PDF conversion was not selected."
 
-            st.session_state.result_summary = {
+            st.session_state.summary = {
                 "total": len(df),
-                "passed": passed,
-                "failed": failed,
-                "pdf_message": pdf_message,
-                "convert_pdf": convert_pdf,
+                "ppt_created": passed,
+                "skipped": failed,
+                "pdf_created": len(st.session_state.pdf_files),
             }
+            st.session_state.generated = True
 
-# Render result and download buttons OUTSIDE TemporaryDirectory block
-if st.session_state.result_summary:
-    summary = st.session_state.result_summary
-
+# -----------------------------
+# Download Center
+# -----------------------------
+if st.session_state.generated:
     st.success("Certificate generation completed.")
 
-    r1, r2, r3 = st.columns(3)
-    r1.metric("Total Students", summary["total"])
-    r2.metric("PPT Certificates", summary["passed"])
-    r3.metric("Skipped", summary["failed"])
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Total Students", st.session_state.summary.get("total", 0))
+    r2.metric("PPT Certificates", st.session_state.summary.get("ppt_created", 0))
+    r3.metric("PDF Certificates", st.session_state.summary.get("pdf_created", 0))
+    r4.metric("Skipped", st.session_state.summary.get("skipped", 0))
+
+    st.markdown("---")
+    st.header("📥 Download Center")
+
+    st.subheader("Option 1: Bulk ZIP Downloads")
+    z1, z2, z3 = st.columns(3)
 
     if st.session_state.ppt_zip_bytes:
-        st.download_button(
+        z1.download_button(
             label="⬇️ Download PPT Certificates ZIP",
             data=st.session_state.ppt_zip_bytes,
             file_name="Certificates.zip",
@@ -378,8 +407,19 @@ if st.session_state.result_summary:
             key="download_ppt_zip",
         )
 
+    if st.session_state.pdf_zip_bytes:
+        z2.download_button(
+            label="⬇️ Download PDF Certificates ZIP",
+            data=st.session_state.pdf_zip_bytes,
+            file_name="PDF_Certificates.zip",
+            mime="application/zip",
+            key="download_pdf_zip",
+        )
+    elif convert_pdf:
+        z2.warning(st.session_state.pdf_message or "PDF ZIP not available.")
+
     if st.session_state.skipped_excel_bytes:
-        st.download_button(
+        z3.download_button(
             label="⬇️ Download Skipped Students Excel",
             data=st.session_state.skipped_excel_bytes,
             file_name="Skipped_Students.xlsx",
@@ -387,21 +427,27 @@ if st.session_state.result_summary:
             key="download_skipped_excel",
         )
 
-    if summary["convert_pdf"]:
-        if st.session_state.pdf_zip_bytes:
-            st.success(summary["pdf_message"])
-            st.download_button(
-                label="⬇️ Download PDF Certificates ZIP",
-                data=st.session_state.pdf_zip_bytes,
-                file_name="PDF_Certificates.zip",
-                mime="application/zip",
-                key="download_pdf_zip",
-            )
-        else:
-            st.warning(summary["pdf_message"] or "PDF conversion failed.")
+    st.markdown("---")
+
+    render_individual_downloads(
+        title="Option 2: Download Individual PPT Certificates",
+        files_dict=st.session_state.ppt_files,
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        key_prefix="ppt_individual",
+    )
+
+    render_individual_downloads(
+        title="Option 3: Download Individual PDF Certificates",
+        files_dict=st.session_state.pdf_files,
+        mime="application/pdf",
+        key_prefix="pdf_individual",
+    )
+
+    if not st.session_state.pdf_files:
+        st.info("Individual PDF downloads will appear only when PDF conversion is selected and successful.")
 
 st.markdown("---")
 st.info(
-    "Note: For PDF conversion on Streamlit Cloud, add LibreOffice in packages.txt. "
+    "Note: For PDF conversion on Streamlit Cloud, add `libreoffice` in packages.txt. "
     "PPT generation works with Python packages only."
 )
