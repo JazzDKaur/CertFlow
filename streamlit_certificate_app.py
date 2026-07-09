@@ -15,6 +15,7 @@ import streamlit as st
 from pptx import Presentation
 
 
+
 # -----------------------------
 # Helper functions
 # -----------------------------
@@ -63,6 +64,40 @@ MONTH_LOOKUP = {
     "DEC": 12,
     "DECEMBER": 12,
 }
+
+def install_custom_fonts():
+    """
+    Install custom fonts for Streamlit Cloud/Linux.
+    On Windows local system, skip fc-cache because Windows does not have it.
+    """
+
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    fonts_source = Path("fonts")
+
+    if not fonts_source.exists():
+        return
+
+    # If running on Windows, do not run fc-cache
+    if os.name == "nt":
+        return
+
+    fonts_target = Path.home() / ".local" / "share" / "fonts"
+    fonts_target.mkdir(parents=True, exist_ok=True)
+
+    for pattern in ("*.ttf", "*.TTF", "*.otf", "*.OTF"):
+        for font_file in fonts_source.glob(pattern):
+            shutil.copy2(font_file, fonts_target / font_file.name)
+
+    subprocess.run(
+        ["fc-cache", "-f", "-v"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
 
 
 def safe_filename(text: str) -> str:
@@ -453,6 +488,7 @@ st.set_page_config(
 )
 
 init_session_state()
+install_custom_fonts()
 
 st.title("🎓 Excel to PPT Certificate Generator")
 st.caption("Upload an Excel file and a PowerPoint certificate template to generate personalized certificates.")
