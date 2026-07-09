@@ -36,6 +36,7 @@ PLACEHOLDERS = {
     "{{DateIssued}}": "Calculated from Exam Cycle",
 }
 
+
 MONTH_LOOKUP = {
     "JAN": 1,
     "JANUARY": 1,
@@ -80,8 +81,8 @@ def get_ordinal_suffix(day: int) -> str:
 
 
 def format_certificate_date(date_value: date) -> str:
-    """Format date as 31st Jan 26."""
-    return f"{date_value.day}{get_ordinal_suffix(date_value.day)} {date_value.strftime('%b %y')}"
+    """Format date as dd/mm/yyyy."""
+    return date_value.strftime("%d/%m/%Y")
 
 
 def last_day_of_month(year: int, month: int) -> date:
@@ -145,7 +146,10 @@ def add_date_issued_preview(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def replace_text(shape, replacements: dict) -> None:
-    """Replace placeholder text inside a normal text shape."""
+    """
+    Replace placeholder text while keeping the same font/style as the PPT template.
+    No custom font is applied.
+    """
     if not shape.has_text_frame:
         return
 
@@ -160,10 +164,13 @@ def replace_text(shape, replacements: dict) -> None:
             updated = updated.replace(key, str(value))
 
         if updated != full_text and paragraph.runs:
+            # Put replaced text in the first existing run.
+            # This preserves the template font/style of that placeholder run.
             paragraph.runs[0].text = updated
+
+            # Clear extra runs to avoid duplicate/old placeholder text.
             for run in paragraph.runs[1:]:
                 run.text = ""
-
 
 def process_shape(shape, replacements: dict) -> None:
     """Process normal shapes and grouped shapes recursively."""
@@ -183,50 +190,94 @@ def create_zip(source_folder: Path, zip_path: Path) -> None:
 
 
 def convert_pptx_to_pdf(ppt_folder: Path, pdf_folder: Path) -> Tuple[bool, str]:
-    """Convert PPTX files to PDF using LibreOffice if available."""
+    """
+    Convert all PPTX files in a folder to PDF using LibreOffice.
+    Works on Windows, Linux and Streamlit Cloud.
+    """
+
+    import os
+    import shutil
+    import subprocess
+
     pdf_folder.mkdir(parents=True, exist_ok=True)
 
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
-    if not soffice:
-        return False, "LibreOffice is not installed/found. PDF conversion was skipped."
+    # Try to locate LibreOffice
+    possible_paths = [
+        shutil.which("soffice"),
+        shutil.which("libreoffice"),
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    ]
+
+    soffice = None
+    for path in possible_paths:
+        if path and os.path.exists(path):
+            soffice = path
+            break
+
+    if soffice is None:
+        return (
+            False,
+            "LibreOffice (soffice.exe) was not found. "
+            "Install LibreOffice or add soffice.exe to your PATH."
+        )
 
     ppt_files = list(ppt_folder.glob("*.pptx"))
+
     if not ppt_files:
-        return False, "No PPTX files found for PDF conversion."
+        return False, "No PPTX files found."
 
     errors = []
+    converted = 0
 
     for ppt_file in ppt_files:
+
+        command = [
+            soffice,
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(pdf_folder),
+            str(ppt_file),
+        ]
+
         result = subprocess.run(
-            [
-                soffice,
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(pdf_folder),
-                str(ppt_file),
-            ],
-            check=False,
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
 
         expected_pdf = pdf_folder / f"{ppt_file.stem}.pdf"
-        if result.returncode != 0 or not expected_pdf.exists():
-            errors.append(f"{ppt_file.name}: {result.stderr or result.stdout}")
 
-    pdf_count = len(list(pdf_folder.glob("*.pdf")))
+        if expected_pdf.exists():
+            converted += 1
+        else:
+            errors.append(
+                f"{ppt_file.name}\n"
+                f"Return Code: {result.returncode}\n"
+                f"STDOUT: {result.stdout}\n"
+                f"STDERR: {result.stderr}"
+            )
 
-    if pdf_count == 0:
-        return False, "PDF conversion failed. " + " | ".join(errors[:3])
+    if converted == 0:
+        return (
+            False,
+            "PDF conversion failed.\n\n"
+            + "\n\n".join(errors[:3])
+        )
 
     if errors:
-        return True, f"PDF conversion completed with some warnings. {pdf_count} PDFs created."
+        return (
+            True,
+            f"{converted} PDFs created.\nSome files failed:\n"
+            + "\n\n".join(errors[:3])
+        )
 
-    return True, f"PDF conversion completed. {pdf_count} PDFs created."
-
+    return True, f"Successfully created {converted} PDF(s)."
 
 def generate_certificates(
     df: pd.DataFrame,
@@ -316,7 +367,16 @@ def render_individual_downloads(title: str, files_dict: dict[str, bytes], mime: 
     if not files_dict:
         return
 
-    with st.expander(title, expanded=False):
+    expander_key = f"expander_open_{key_prefix}"
+
+    # Streamlit does not expose native expander open/close state.
+    # This toggle keeps the section open across reruns until the user turns it off.
+    st.toggle(f"Show {title}", key=expander_key)
+
+    if not st.session_state.get(expander_key, False):
+        return
+
+    with st.expander(title, expanded=True):
         search = st.text_input("🔍 Search by name or enrollment number", key=f"search_{key_prefix}")
         filtered_files = {
             name: data
@@ -403,7 +463,7 @@ with st.sidebar:
 
     st.info(
         "Date Issued is now calculated automatically from the Excel column `Exam Cycle`. "
-        "Example: Jan26 → 31st Jan 26. Future/current cycles use the last completed month."
+        "Example: Jan26 → 31/01/2026. Future/current cycles use the last completed month."
     )
 
     st.markdown("---")
