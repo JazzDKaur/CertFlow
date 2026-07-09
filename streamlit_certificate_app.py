@@ -226,7 +226,7 @@ REQUIRED_COLUMNS = [
 
 PLACEHOLDERS = {
     "{{Name}}": "Name of Student",
-    "{{Course}}": "Subject Name",
+    "{{Course}}": "Course",
     "{{Marks}}": "Total Marks",
     "{{Grade}}": "Grades",
     "{{Enrollment}}": "Enrollment No.",
