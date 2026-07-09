@@ -1,1 +1,3 @@
 libreoffice
+fontconfig
+fonts-dejavu
