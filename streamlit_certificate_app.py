@@ -217,7 +217,7 @@ def inject_custom_css() -> None:
 # -----------------------------
 REQUIRED_COLUMNS = [
     "Name of Student",
-    "Subject Name",
+    "Course",
     "Total Marks",
     "Grades",
     "Enrollment No.",
@@ -226,6 +226,7 @@ REQUIRED_COLUMNS = [
 
 PLACEHOLDERS = {
     "{{Name}}": "Name of Student",
+    "{{SName}}": "Name of Student",
     "{{Course}}": "Course",
     "{{Marks}}": "Total Marks",
     "{{Grade}}": "Grades",
@@ -334,7 +335,10 @@ def add_date_issued_preview(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def replace_text(shape, replacements: dict) -> None:
-    """Replace placeholders while keeping certificate font consistent."""
+    """Replace all placeholders.
+    Only {{Name}} uses Baguet Script.
+    Other placeholders keep template font.
+    """
     if not shape.has_text_frame:
         return
 
@@ -347,17 +351,20 @@ def replace_text(shape, replacements: dict) -> None:
             continue
 
         updated = full_text
+        name_found = "{{Name}}" in full_text
+
         for key, value in replacements.items():
             updated = updated.replace(key, str(value))
 
         if updated != full_text and paragraph.runs:
             first_run = paragraph.runs[0]
             first_run.text = updated
-            first_run.font.name = FONT_NAME
+
+            if name_found:
+                first_run.font.name = FONT_NAME
 
             for run in paragraph.runs[1:]:
                 run.text = ""
-                run.font.name = FONT_NAME
 
 
 def get_font_status() -> tuple[str, str]:
@@ -498,11 +505,12 @@ def generate_certificates(
 
             replacements = {
                 "{{Name}}": row["Name of Student"],
-                "{{Course}}": row["Subject Name"],
+                "{{Course}}": row["Course"],
                 "{{Marks}}": row["Total Marks"],
                 "{{Grade}}": row["Grades"],
                 "{{DateIssued}}": date_issued,
                 "{{Enrollment}}": row["Enrollment No."],
+                "{{SName}}": row["Name of Student"],
             }
 
             for slide in prs.slides:
@@ -635,7 +643,7 @@ def render_sidebar(convert_pdf_default: bool = False) -> bool:
         st.markdown("### 🧩 Template Placeholders")
         st.caption("Use these exact placeholders inside your PPT template.")
         st.code(
-            "{{Name}}\n{{Course}}\n{{Marks}}\n{{Grade}}\n{{DateIssued}}\n{{Enrollment}}",
+            "{{Name}}\n{{Course}}\n{{Marks}}\n{{Grade}}\n{{DateIssued}}\n{{Enrollment}}\n{{SName}}",
             language="text",
         )
 
@@ -730,7 +738,7 @@ with upload_col1:
         "Upload Excel File",
         type=["xlsx"],
         label_visibility="collapsed",
-        help="Required columns: Name of Student, Subject Name, Total Marks, Grades, Enrollment No., Exam Cycle",
+        help="Required columns: Name of Student, Course, Total Marks, Grades, Enrollment No., Exam Cycle",
     )
 
 with upload_col2:
