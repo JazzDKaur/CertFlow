@@ -222,11 +222,13 @@ REQUIRED_COLUMNS = [
     "Grades",
     "Enrollment No.",
     "Exam Cycle",
+    "Subject Name"
 ]
 
 PLACEHOLDERS = {
     "{{Name}}": "Name of Student",
     "{{SName}}": "Name of Student",
+    "{{Subject}}":"Subject Name",
     "{{Course}}": "Course",
     "{{Marks}}": "Total Marks",
     "{{Grade}}": "Grades",
@@ -511,6 +513,7 @@ def generate_certificates(
                 "{{DateIssued}}": date_issued,
                 "{{Enrollment}}": row["Enrollment No."],
                 "{{SName}}": row["Name of Student"],
+                "{{Subject}}":row["Subject Name"],
             }
 
             for slide in prs.slides:
@@ -643,7 +646,7 @@ def render_sidebar(convert_pdf_default: bool = False) -> bool:
         st.markdown("### 🧩 Template Placeholders")
         st.caption("Use these exact placeholders inside your PPT template.")
         st.code(
-            "{{Name}}\n{{Course}}\n{{Marks}}\n{{Grade}}\n{{DateIssued}}\n{{Enrollment}}\n{{SName}}",
+            "{{Name}}\n{{Course}}\n{{Subject}}\n{{Marks}}\n{{Grade}}\n{{DateIssued}}\n{{Enrollment}}\n{{SName}}",
             language="text",
         )
 
@@ -738,7 +741,7 @@ with upload_col1:
         "Upload Excel File",
         type=["xlsx"],
         label_visibility="collapsed",
-        help="Required columns: Name of Student, Course, Total Marks, Grades, Enrollment No., Exam Cycle",
+        help="Required columns: Name of Student, Course, Subject, Total Marks, Grades, Enrollment No., Exam Cycle",
     )
 
 with upload_col2:
@@ -747,7 +750,7 @@ with upload_col2:
         "Upload PPT Template",
         type=["pptx"],
         label_visibility="collapsed",
-        help="The PPT template must contain placeholders like {{Name}}, {{Course}}, {{DateIssued}} etc.",
+        help="The PPT template must contain placeholders like {{Name}}, {{Course}}, {{Subject}},{{DateIssued}} etc.",
     )
 
 st.markdown("---")
