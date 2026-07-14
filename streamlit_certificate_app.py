@@ -499,38 +499,70 @@ def generate_certificates(
         if grade == "F":
             failed += 1
             failed_students.append(row.to_dict())
+
             if status_box:
-                status_box.info(f"Skipped: {row['Name of Student']} because Grade is F")
+                status_box.info(
+                    f"Skipped: {row['Name of Student']} because Grade is F"
+                )
+
         else:
             prs = Presentation(str(template_path))
-            date_issued = row.get("Date Issued") or calculate_date_issued(row["Exam Cycle"])
+
+            date_issued = (
+                row.get("Date Issued")
+                or calculate_date_issued(row["Exam Cycle"])
+            )
+
+            # Always print Total Marks as an integer.
+            # Examples:
+            # 85.0  -> 85
+            # 85.4  -> 85
+            # 85.6  -> 86
+            marks_value = row["Total Marks"]
+
+            try:
+                if pd.notna(marks_value) and str(marks_value).strip() != "":
+                    marks = str(int(round(float(marks_value))))
+                else:
+                    marks = ""
+            except (ValueError, TypeError):
+                # Keep the original value if it cannot be converted.
+                marks = str(marks_value).strip()
 
             replacements = {
                 "{{Name}}": row["Name of Student"],
                 "{{Course}}": row["Course"],
-                "{{Marks}}": row["Total Marks"],
+                "{{Marks}}": marks,
                 "{{Grade}}": row["Grades"],
                 "{{DateIssued}}": date_issued,
                 "{{Enrollment}}": row["Enrollment No."],
                 "{{SName}}": row["Name of Student"],
-                "{{Subject}}":row["Subject Name"],
+                "{{Subject}}": row["Subject Name"],
             }
 
             for slide in prs.slides:
                 for shape in slide.shapes:
                     process_shape(shape, replacements)
 
-            filename = safe_filename(f"{row['Enrollment No.']}_{row['Name of Student']}.pptx")
+            filename = safe_filename(
+                f"{row['Enrollment No.']}_{row['Name of Student']}.pptx"
+            )
+
             prs.save(output_folder / filename)
             passed += 1
 
             if status_box:
-                status_box.success(f"Generated: {filename} | Date Issued: {date_issued}")
+                status_box.success(
+                    f"Generated: {filename} | "
+                    f"Marks: {marks} | "
+                    f"Date Issued: {date_issued}"
+                )
 
         if progress_bar:
             progress_bar.progress(count / total)
 
     return passed, failed, failed_students
+
 
 
 def files_to_bytes_dict(folder: Path, pattern: str) -> dict[str, bytes]:
