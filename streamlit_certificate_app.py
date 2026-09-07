@@ -225,6 +225,23 @@ REQUIRED_COLUMNS = [
     "Subject Name"
 ]
 
+
+def get_required_columns(field_options: dict, date_mode: str) -> list[str]:
+    """Return only the Excel columns required for the selected certificate configuration."""
+    # These columns are operationally required even if they are not printed.
+    required = ["Name of Student", "Grades", "Enrollment No."]
+
+    if field_options.get("include_course"):
+        required.append("Course")
+    if field_options.get("include_subject"):
+        required.append("Subject Name")
+    if field_options.get("include_marks"):
+        required.append("Total Marks")
+    if date_mode == "Automatic from Exam Cycle":
+        required.append("Exam Cycle")
+
+    return required
+
 PLACEHOLDERS = {
     "{{Name}}": "Name of Student",
     "{{SName}}": "Name of Student",
@@ -328,6 +345,19 @@ def calculate_date_issued(exam_cycle: str, today: Optional[date] = None) -> str:
     last_completed_end = get_last_completed_month_end(today)
     issue_date = min(exam_cycle_end, last_completed_end)
     return format_certificate_date(issue_date)
+
+
+def get_date_issued(
+    exam_cycle: str,
+    date_mode: str,
+    manual_date: Optional[date] = None,
+) -> str:
+    if date_mode == "Enter Date Manually":
+        if manual_date is None:
+            raise ValueError("Manual Date Issued was not selected.")
+        return format_certificate_date(manual_date)
+
+    return calculate_date_issued(exam_cycle)
 
 
 def add_date_issued_preview(df: pd.DataFrame) -> pd.DataFrame:
@@ -480,6 +510,9 @@ def generate_certificates(
     df: pd.DataFrame,
     template_path: Path,
     output_folder: Path,
+    date_mode: str,
+    manual_issue_date: Optional[date],
+    field_options: dict,
     progress_bar=None,
     status_box=None,
 ) -> tuple[int, int, list[dict]]:
@@ -508,9 +541,10 @@ def generate_certificates(
         else:
             prs = Presentation(str(template_path))
 
-            date_issued = (
-                row.get("Date Issued")
-                or calculate_date_issued(row["Exam Cycle"])
+            date_issued = get_date_issued(
+                exam_cycle=row["Exam Cycle"],
+                date_mode=date_mode,
+                manual_date=manual_issue_date,
             )
 
             # Always print Total Marks as an integer.
@@ -518,7 +552,7 @@ def generate_certificates(
             # 85.0  -> 85
             # 85.4  -> 85
             # 85.6  -> 86
-            marks_value = row["Total Marks"]
+            marks_value = row.get("Total Marks", "")
 
             try:
                 if pd.notna(marks_value) and str(marks_value).strip() != "":
@@ -531,13 +565,13 @@ def generate_certificates(
 
             replacements = {
                 "{{Name}}": row["Name of Student"],
-                "{{Course}}": row["Course"],
-                "{{Marks}}": marks,
-                "{{Grade}}": row["Grades"],
+                "{{Course}}": row.get("Course", "") if field_options["include_course"] else "",
+                "{{Marks}}": marks if field_options["include_marks"] else "",
+                "{{Grade}}": row["Grades"] if field_options["include_grade"] else "",
                 "{{DateIssued}}": date_issued,
-                "{{Enrollment}}": row["Enrollment No."],
+                "{{Enrollment}}": row["Enrollment No."] if field_options["include_enrollment"] else "",
                 "{{SName}}": row["Name of Student"],
-                "{{Subject}}": row["Subject Name"],
+                "{{Subject}}": row.get("Subject Name", "") if field_options["include_subject"] else "",
             }
 
             for slide in prs.slides:
@@ -562,7 +596,6 @@ def generate_certificates(
             progress_bar.progress(count / total)
 
     return passed, failed, failed_students
-
 
 
 def files_to_bytes_dict(folder: Path, pattern: str) -> dict[str, bytes]:
@@ -669,10 +702,94 @@ def clear_previous_results() -> None:
     clear_downloaded_statuses()
 
 
-def render_sidebar(convert_pdf_default: bool = False) -> bool:
+def render_sidebar(convert_pdf_default: bool = False):
     with st.sidebar:
         st.markdown("### ⚙️ Generation Settings")
         convert_pdf = st.checkbox("Create PDF copies also", value=convert_pdf_default)
+
+        st.markdown("---")
+        st.markdown("### 🎓 Certificate Type")
+        certificate_type = st.selectbox(
+            "Select certificate type",
+            [
+                "Course Certificate",
+                "Subject Certificate",
+                "Participation Certificate",
+                "Custom",
+            ],
+        )
+
+        preset_fields = {
+            "Course Certificate": {
+                "course": True,
+                "subject": False,
+                "marks": True,
+                "grade": True,
+                "enrollment": True,
+            },
+            "Subject Certificate": {
+                "course": True,
+                "subject": True,
+                "marks": True,
+                "grade": True,
+                "enrollment": True,
+            },
+            "Participation Certificate": {
+                "course": True,
+                "subject": False,
+                "marks": False,
+                "grade": False,
+                "enrollment": False,
+            },
+        }
+
+        if certificate_type == "Custom":
+            include_course = st.checkbox("Include Course", value=True)
+            include_subject = st.checkbox("Include Subject", value=True)
+            include_marks = st.checkbox("Include Marks", value=True)
+            include_grade = st.checkbox("Include Grade", value=True)
+            include_enrollment = st.checkbox("Include Enrollment No.", value=True)
+        else:
+            selected = preset_fields[certificate_type]
+            include_course = selected["course"]
+            include_subject = selected["subject"]
+            include_marks = selected["marks"]
+            include_grade = selected["grade"]
+            include_enrollment = selected["enrollment"]
+
+            st.caption("Fields selected automatically for this certificate type.")
+            st.markdown(
+                f"Course: {'✅' if include_course else '❌'}  \
+"
+                f"Subject: {'✅' if include_subject else '❌'}  \
+"
+                f"Marks: {'✅' if include_marks else '❌'}  \
+"
+                f"Grade: {'✅' if include_grade else '❌'}  \
+"
+                f"Enrollment: {'✅' if include_enrollment else '❌'}"
+            )
+
+        st.markdown("---")
+        st.markdown("### 📅 Date Issued")
+        date_mode = st.radio(
+            "How should Date Issued be determined?",
+            [
+                "Automatic from Exam Cycle",
+                "Enter Date Manually",
+            ],
+        )
+
+        manual_issue_date = None
+        if date_mode == "Enter Date Manually":
+            manual_issue_date = st.date_input(
+                "Select Date Issued",
+                value=date.today(),
+                format="DD/MM/YYYY",
+            )
+            st.caption("This date will be used for all certificates in this batch.")
+        else:
+            st.caption("Date will be calculated automatically from Exam Cycle.")
 
         st.markdown("---")
         st.markdown("### 🧩 Template Placeholders")
@@ -700,7 +817,15 @@ def render_sidebar(convert_pdf_default: bool = False) -> bool:
         st.markdown("---")
         st.caption("For Streamlit Cloud PDF conversion, keep `libreoffice` inside packages.txt.")
 
-    return convert_pdf
+    field_options = {
+        "include_course": include_course,
+        "include_subject": include_subject,
+        "include_marks": include_marks,
+        "include_grade": include_grade,
+        "include_enrollment": include_enrollment,
+    }
+
+    return convert_pdf, certificate_type, field_options, date_mode, manual_issue_date
 
 
 def render_hero() -> None:
@@ -760,7 +885,8 @@ inject_custom_css()
 init_session_state()
 install_custom_fonts()
 
-convert_pdf = render_sidebar()
+convert_pdf, certificate_type, field_options, date_mode, manual_issue_date = render_sidebar()
+active_required_columns = get_required_columns(field_options, date_mode)
 render_hero()
 render_workflow_cards()
 
@@ -773,7 +899,7 @@ with upload_col1:
         "Upload Excel File",
         type=["xlsx"],
         label_visibility="collapsed",
-        help="Required columns: Name of Student, Course, Subject, Total Marks, Grades, Enrollment No., Exam Cycle",
+        help="Required for the current settings: " + ", ".join(active_required_columns),
     )
 
 with upload_col2:
@@ -792,16 +918,20 @@ if excel_file:
     try:
         preview_df = pd.read_excel(excel_file).fillna("")
 
-        missing_columns = [col for col in REQUIRED_COLUMNS if col not in preview_df.columns]
+        missing_columns = [col for col in active_required_columns if col not in preview_df.columns]
         if missing_columns:
             st.error("Missing required columns: " + ", ".join(missing_columns))
             st.markdown("### Excel Preview")
             st.dataframe(preview_df.head(10), use_container_width=True)
         else:
             try:
-                preview_df = add_date_issued_preview(preview_df)
+                if date_mode == "Automatic from Exam Cycle":
+                    preview_df = add_date_issued_preview(preview_df)
+                else:
+                    preview_df = preview_df.copy()
+                    preview_df["Date Issued"] = format_certificate_date(manual_issue_date)
             except Exception as e:
-                st.error(f"Could not calculate Date Issued from Exam Cycle: {e}")
+                st.error(f"Could not determine Date Issued: {e}")
 
             total_students = len(preview_df)
             pass_count = len(preview_df[preview_df["Grades"].astype(str).str.strip().str.upper() != "F"])
@@ -855,15 +985,19 @@ if generate_clicked:
         template_path.write_bytes(ppt_template.getvalue())
 
         df = pd.read_excel(excel_path).fillna("")
-        missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+        missing_columns = [col for col in active_required_columns if col not in df.columns]
 
         if missing_columns:
             st.error("Cannot generate. Missing columns: " + ", ".join(missing_columns))
         else:
             try:
-                df = add_date_issued_preview(df)
+                if date_mode == "Automatic from Exam Cycle":
+                    df = add_date_issued_preview(df)
+                else:
+                    df = df.copy()
+                    df["Date Issued"] = format_certificate_date(manual_issue_date)
             except Exception as e:
-                st.error(f"Cannot generate. Invalid Exam Cycle data: {e}")
+                st.error(f"Cannot generate. Date Issued could not be determined: {e}")
                 st.stop()
 
             st.markdown("### Generation Progress")
@@ -874,6 +1008,9 @@ if generate_clicked:
                 df=df,
                 template_path=template_path,
                 output_folder=output_folder,
+                date_mode=date_mode,
+                manual_issue_date=manual_issue_date,
+                field_options=field_options,
                 progress_bar=progress_bar,
                 status_box=status_box,
             )
@@ -907,6 +1044,8 @@ if generate_clicked:
                 "ppt_created": passed,
                 "skipped": failed,
                 "pdf_created": len(st.session_state.pdf_files),
+                "certificate_type": certificate_type,
+                "date_mode": date_mode,
             }
             st.session_state.generated = True
             st.rerun()
