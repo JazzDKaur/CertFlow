@@ -15,7 +15,7 @@ import streamlit as st
 from pptx import Presentation
 
 
-# -----------------------------
+# --------------------------------
 # Page Configuration
 # -----------------------------
 st.set_page_config(
